@@ -2,6 +2,8 @@ Binaries
 DerivedDataCache
 Intermediate
 Saved
+Content/__ExternalActors__
+Content/__ExternalObjects__
 .vscode
 .vs
 *.VC.db
