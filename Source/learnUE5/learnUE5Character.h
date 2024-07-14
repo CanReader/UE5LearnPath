@@ -6,11 +6,9 @@
 #include "GameFramework/Character.h"
 #include "Logging/LogMacros.h"
 #include "Kismet/GameplayStatics.h"
-#include <OnlineSubsystem.h>
-#include <Interfaces/OnlineSessionDelegates.h>
-#include <Interfaces/OnlineSessionInterface.h>
-#include <OnlineSessionSettings.h>
-
+#include "Components/WidgetComponent.h"
+#include "Weapon.h"
+#include "CombatComponent.h"
 #include "learnUE5Character.generated.h"
 
 class USpringArmComponent;
@@ -19,7 +17,7 @@ class UInputMappingContext;
 class UInputAction;
 struct FInputActionValue;
 
-DECLARE_LOG_CATEGORY_EXTERN(LogTemplateCharacter, Log, All);
+DECLARE_LOG_CATEGORY_EXTERN(CharacterLog, Log, All);
 
 UCLASS(config=Game)
 class AlearnUE5Character : public ACharacter
@@ -30,37 +28,54 @@ public:
 	AlearnUE5Character();
 
 protected:
-	virtual void SetupPlayerInputComponent(class UInputComponent* PlayerInputComponent) override;
+	virtual void BeginPlay() override;
+	virtual void Tick(float delta) override;
 
-	virtual void BeginPlay();
+	virtual void SetupPlayerInputComponent(class UInputComponent* PlayerInputComponent) override;
+	virtual void GetLifetimeReplicatedProps(TArray<FLifetimeProperty>& OutLifetimeProps) const override;
+
+#pragma region Functions
 
 	void Move(const FInputActionValue& Value);
 
 	void Look(const FInputActionValue& Value);
 
-	UFUNCTION(BlueprintCallable)
-	void CreateGameSession();
+	void Use(const FInputActionValue & Value);
 
-	UFUNCTION(BlueprintCallable)
-	void JoinGameSession();
-	
-	UFUNCTION(BlueprintCallable)
-	void OnSessionCreated(FName SessionName, bool isSuccessful);
+	UFUNCTION()
+	void OnRep_OverlapWeapon(AWeapon* LastWeapon);
 
-	UFUNCTION(BlueprintCallable)
-	void OnFindSession(bool bWasSuccessful);
+#pragma endregion
+
+
+
+#pragma region Variables
+
+	UPROPERTY(VisibleAnywhere, BlueprintReadOnly, Category = Movement)
+	bool bIsSprinting;
+
+	UPROPERTY(ReplicatedUsing = OnRep_OverlapWeapon)
+	AWeapon* OverlappingWeapon;
+
+#pragma endregion
 
 private:
 #pragma region Actor components
-	UPROPERTY(VisibleAnywhere, BlueprintReadOnly, Category = Camera, meta = (AllowPrivateAccess = "true"))
-	USpringArmComponent* CameraBoom;
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = Camera, meta = (AllowPrivateAccess = "true"))
+	USpringArmComponent* ThirdPersonCameraArm;
 
-	UPROPERTY(VisibleAnywhere, BlueprintReadOnly, Category = Camera, meta = (AllowPrivateAccess = "true"))
-	UCameraComponent* FollowCamera;
+	UPROPERTY(VisibleAnywhere, BlueprintReadWrite, Category = Camera, meta = (AllowPrivateAccess = "true"))
+	UCameraComponent* ThirdPersonCamera;
+
+	UPROPERTY(VisibleAnywhere, BlueprintReadOnly, Category = UserWidget, meta = (AllowPrivateAccess = "true"))
+	UWidgetComponent* HeadWidget;
+
+	UPROPERTY(VisibleAnywhere, BlueprintReadOnly, Category = Combat, meta = (AllowPrivateAccess = "true"))
+	UCombatComponent* CombatComponent;
 #pragma endregion
 
-#pragma region Input peocesses
-	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category = Input, meta = (AllowPrivateAccess = "true"))
+#pragma region Input processes
+	UPROPERTY(EditDefaultsOnly,BlueprintReadOnly, Category = Input, meta = (AllowPrivateAccess = "true"))
 	UInputMappingContext* DefaultMappingContext;
 
 	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category = Input, meta = (AllowPrivateAccess = "true"))
@@ -71,23 +86,25 @@ private:
 
 	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category = Input, meta = (AllowPrivateAccess = "true"))
 	UInputAction* LookAction;
+
+	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category = Input, meta = (AllowPrivateAccess = "true"))
+	UInputAction* UseAction;
+	
 #pragma endregion
-
-#pragma region Online processes
-	IOnlineSessionPtr SessionPtr;
-
-	TSharedPtr<FOnlineSessionSearch>SessionSearch;
-
-	FOnCreateSessionCompleteDelegate SessionCreateDelegate;
-	FOnFindSessionsCompleteDelegate FindSessionDelegate;
-#pragma endregion
-
 
 #pragma region Inlines
 public:
-	FORCEINLINE class USpringArmComponent* GetCameraBoom() const { return CameraBoom; }
-	FORCEINLINE class UCameraComponent* GetFollowCamera() const { return FollowCamera; }
+	FORCEINLINE class USpringArmComponent* GetCameraBoom() const { return ThirdPersonCameraArm; }
+	FORCEINLINE class UCameraComponent* GetFollowCamera() const { return ThirdPersonCamera; }
+	FORCEINLINE bool GetIsSprinting() const { return bIsSprinting; }
+	FORCEINLINE void SetOverlapWeapon(AWeapon* weapon) {
+		if (OverlappingWeapon)
+			OverlappingWeapon->ShowPickWidget(false);
+
+		OverlappingWeapon = weapon;
+		if (IsLocallyControlled() && weapon)
+			weapon->ShowPickWidget(true);
+	}
 #pragma endregion
 
 };
-

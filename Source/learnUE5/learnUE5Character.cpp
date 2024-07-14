@@ -1,4 +1,4 @@
-// Copyright Epic Games, Inc. All Rights Reserved.
+ // Copyright Epic Games, Inc. All Rights Reserved.
 
 #include "learnUE5Character.h"
 #include "Engine/LocalPlayer.h"
@@ -10,68 +10,74 @@
 #include "EnhancedInputComponent.h"
 #include "EnhancedInputSubsystems.h"
 #include "InputActionValue.h"
-#include <Online/OnlineSessionNames.h>
+#include "Online/OnlineSessionNames.h"
+#include "Net/UnrealNetwork.h"
+#include "OverheadWidget.h"
 
-
-DEFINE_LOG_CATEGORY(LogTemplateCharacter);
+DEFINE_LOG_CATEGORY(CharacterLog);
 
 //////////////////////////////////////////////////////////////////////////
 // AlearnUE5Character
 
 AlearnUE5Character::AlearnUE5Character()
 {
-	SessionCreateDelegate = 
-		FOnCreateSessionCompleteDelegate::
-		CreateUObject(this,&AlearnUE5Character::OnSessionCreated);
+	GetCapsuleComponent()->SetCapsuleHalfHeight(85.0f);
 
-	FindSessionDelegate = 
-		FOnFindSessionsCompleteDelegate::
-		CreateUObject(this,&AlearnUE5Character::OnFindSession);
+	GetMesh()->SetWorldTransform(
+		FTransform(
+			FRotator(0, 0, -80.0f),
+			FVector(0, 0, -90.0f),
+			FVector(0.9f, 0.9f, 0.9f))
+	);
 
-	GetCapsuleComponent()->InitCapsuleSize(42.f, 96.0f);
-		
-	bUseControllerRotationPitch = false;
+	GetMesh()->SetRelativeLocation(FVector(0, 0, -80.0f));
+	GetMesh()->SetRelativeRotation(FRotator(0,0,-90));
+	GetMesh()->SetWorldScale3D(FVector(0.9,0.9,0.9));
+
+	ThirdPersonCameraArm = CreateDefaultSubobject<USpringArmComponent>(TEXT("Camera Boom"));
+	ThirdPersonCameraArm->SetupAttachment(GetMesh());
+	ThirdPersonCameraArm->TargetArmLength = 150.f;
+	ThirdPersonCameraArm->bUsePawnControlRotation = true;
+	ThirdPersonCameraArm->SetRelativeLocation(FVector(-55, 66, 166));
+
+	ThirdPersonCamera = CreateDefaultSubobject<UCameraComponent>(TEXT("Camera"));
+	ThirdPersonCamera->SetupAttachment(ThirdPersonCameraArm,USpringArmComponent::SocketName);
+	ThirdPersonCamera->bUsePawnControlRotation = true;
+
+	HeadWidget = CreateDefaultSubobject<UWidgetComponent>(TEXT("Overhead"));
+	HeadWidget->SetupAttachment(GetMesh());
+
+	static ConstructorHelpers::FClassFinder<UOverheadWidget> OverheadClass(TEXT("/Game/Blueprints/UWB_OverheadWidget"));
+	if (OverheadClass.Class != NULL)
+		HeadWidget->SetWidgetClass(OverheadClass.Class);
+
+	HeadWidget->SetWidgetSpace(EWidgetSpace::Screen);
+	HeadWidget->SetDrawAtDesiredSize(true);
+
 	bUseControllerRotationYaw = false;
-	bUseControllerRotationRoll = false;
-
-	GetCharacterMovement()->RotationRate = FRotator(0.0f, 500.0f, 0.0f);
-
-	GetCharacterMovement()->JumpZVelocity = 700.f;
-	GetCharacterMovement()->AirControl = 0.35f;
-	GetCharacterMovement()->MaxWalkSpeed = 500.f;
-	GetCharacterMovement()->MinAnalogWalkSpeed = 20.f;
-	GetCharacterMovement()->BrakingDecelerationWalking = 2000.f;
-	GetCharacterMovement()->BrakingDecelerationFalling = 1500.0f;
-
-	CameraBoom = CreateDefaultSubobject<USpringArmComponent>(TEXT("CameraBoom"));
-	CameraBoom->SetupAttachment(RootComponent);
-	CameraBoom->TargetArmLength = 400.0f; 
-	CameraBoom->bUsePawnControlRotation = true;
-
-	FollowCamera = CreateDefaultSubobject<UCameraComponent>(TEXT("FollowCamera"));
-	FollowCamera->SetupAttachment(CameraBoom, USpringArmComponent::SocketName);
-	FollowCamera->bUsePawnControlRotation = false;
-
-	IOnlineSubsystem* osb = IOnlineSubsystem::Get();
-
-	if (osb)
-	{
-		SessionPtr = osb->GetSessionInterface();
-
-		GEngine->AddOnScreenDebugMessage(
-			-1,
-			30.0f,
-			FColor::Red,
-			FString::Printf(TEXT("Found subsystem: %s"),
-				*osb->GetSubsystemName().ToString()));
-	}
-
+	GetCharacterMovement()->bOrientRotationToMovement = true;
 }
 
 void AlearnUE5Character::BeginPlay()
 {
-	// Call the base class  
 	Super::BeginPlay();
+	if (HeadWidget != nullptr && HeadWidget->GetWidget() != nullptr)
+	{
+		UOverheadWidget* widget = Cast<UOverheadWidget>(HeadWidget->GetUserWidgetObject());
+		widget->ShowNetRole(this);
+	}
+}
+
+void AlearnUE5Character::Tick(float delta)
+{
+	Super::Tick(delta);
+}
+
+void AlearnUE5Character::GetLifetimeReplicatedProps(TArray<FLifetimeProperty>& OutLifetimeProps) const
+{
+	Super::GetLifetimeReplicatedProps(OutLifetimeProps);
+
+	DOREPLIFETIME_CONDITION(AlearnUE5Character, OverlappingWeapon,COND_OwnerOnly)
 }
 
 //////////////////////////////////////////////////////////////////////////
@@ -79,135 +85,77 @@ void AlearnUE5Character::BeginPlay()
 
 void AlearnUE5Character::SetupPlayerInputComponent(UInputComponent* PlayerInputComponent)
 {
-	// Add Input Mapping Context
-	if (APlayerController* PlayerController = Cast<APlayerController>(GetController()))
+	APlayerController* controller = Cast<APlayerController>(GetController());
+
+	if(controller)
 	{
-		if (UEnhancedInputLocalPlayerSubsystem* Subsystem = ULocalPlayer::GetSubsystem<UEnhancedInputLocalPlayerSubsystem>(PlayerController->GetLocalPlayer()))
-		{
-			Subsystem->AddMappingContext(DefaultMappingContext, 0);
+		auto local = ULocalPlayer::GetSubsystem<UEnhancedInputLocalPlayerSubsystem>(controller->GetLocalPlayer());
+
+		local->AddMappingContext(DefaultMappingContext,0);
+		
+		UEnhancedInputComponent* input = Cast<UEnhancedInputComponent>(PlayerInputComponent);
+
+		if (input)
+		{	
+			input->BindAction(MoveAction,ETriggerEvent::Triggered,this,&AlearnUE5Character::Move);
+
+			input->BindAction(LookAction, ETriggerEvent::Triggered,this,&AlearnUE5Character::Look);
+
+			input->BindAction(JumpAction,ETriggerEvent::Started,this,&AlearnUE5Character::Jump);
+
+			input->BindAction(JumpAction,ETriggerEvent::Completed,this,&AlearnUE5Character::StopJumping);
+
+			input->BindAction(UseAction, ETriggerEvent::Triggered,this,AlearnUE5Character::UseKey);
+		}
+		else {
+			UE_LOG(LogTemp,Error,TEXT("Failed to initialize enchanced input subsystem! Legacy input system will be used"));
+
 		}
 	}
-	
-	// Set up action bindings
-	if (UEnhancedInputComponent* EnhancedInputComponent = Cast<UEnhancedInputComponent>(PlayerInputComponent)) {
-		
-		// Jumping
-		EnhancedInputComponent->BindAction(JumpAction, ETriggerEvent::Started, this, &ACharacter::Jump);
-		EnhancedInputComponent->BindAction(JumpAction, ETriggerEvent::Completed, this, &ACharacter::StopJumping);
-
-		// Moving
-		EnhancedInputComponent->BindAction(MoveAction, ETriggerEvent::Triggered, this, &AlearnUE5Character::Move);
-
-		// Looking
-		EnhancedInputComponent->BindAction(LookAction, ETriggerEvent::Triggered, this, &AlearnUE5Character::Look);
-	}
-	else
-	{
-		UE_LOG(LogTemplateCharacter, Error, TEXT("'%s' Failed to find an Enhanced Input component! This template is built to use the Enhanced Input system. If you intend to use the legacy system, then you will need to update this C++ file."), *GetNameSafe(this));
+	else {
+		UE_LOG(LogTemp,Error,TEXT("Failed to cast controller! The code will not work!"));
 	}
 }
 
 void AlearnUE5Character::Move(const FInputActionValue& Value)
 {
-	// input is a Vector2D
-	FVector2D MovementVector = Value.Get<FVector2D>();
+	FVector2D MoveVector = Value.Get<FVector2D>();
 
-	if (Controller != nullptr)
+	if (Controller)
 	{
-		// find out which way is forward
 		const FRotator Rotation = Controller->GetControlRotation();
-		const FRotator YawRotation(0, Rotation.Yaw, 0);
+		const FRotator Yaw(0,Rotation.Yaw,0);
 
-		// get forward vector
-		const FVector ForwardDirection = FRotationMatrix(YawRotation).GetUnitAxis(EAxis::X);
-	
-		// get right vector 
-		const FVector RightDirection = FRotationMatrix(YawRotation).GetUnitAxis(EAxis::Y);
+		const FVector ForwardVector = FRotationMatrix(Yaw).GetUnitAxis(EAxis::X);
+		const FVector RightVector = FRotationMatrix(Yaw).GetUnitAxis(EAxis::Y);
 
-		// add movement 
-		AddMovementInput(ForwardDirection, MovementVector.Y);
-		AddMovementInput(RightDirection, MovementVector.X);
+		AddMovementInput(ForwardVector,MoveVector.Y);
+		AddMovementInput(RightVector,MoveVector.X);
 	}
 }
 
 void AlearnUE5Character::Look(const FInputActionValue& Value)
 {
-	// input is a Vector2D
-	FVector2D LookAxisVector = Value.Get<FVector2D>();
+	FVector2D LookAxis = Value.Get<FVector2D>();
 
-	if (Controller != nullptr)
+	if (Controller)
 	{
-		// add yaw and pitch input to controller
-		AddControllerYawInput(LookAxisVector.X);
-		AddControllerPitchInput(LookAxisVector.Y);
+		AddControllerYawInput(LookAxis.X);
+		AddControllerPitchInput(LookAxis.Y);
 	}
 }
 
-void AlearnUE5Character::CreateGameSession()
+void AlearnUE5Character::UseKey(const FInputActionValue& Value)
 {
-	if (SessionPtr.IsValid()) {
-		FNamedOnlineSession* session = SessionPtr->GetNamedSession(NAME_GameSession);
-		if (session != nullptr)
-			SessionPtr->DestroySession(NAME_GameSession);
-
-		TSharedPtr<FOnlineSessionSettings> sesSettings = MakeShareable(new FOnlineSessionSettings());
-		//Set settings
-		sesSettings->bIsLANMatch = false;
-		sesSettings->NumPublicConnections = 4;
-		sesSettings->bAllowJoinInProgress = true;
-		sesSettings->bAllowJoinViaPresence = true;
-		sesSettings->bShouldAdvertise = true;
-		sesSettings->bUsesPresence = true;
-		sesSettings->bUseLobbiesIfAvailable = true;
-
-		SessionPtr->AddOnCreateSessionCompleteDelegate_Handle(SessionCreateDelegate);
-
-		const ULocalPlayer* local = GetWorld()->GetFirstLocalPlayerFromController();
-		SessionPtr->CreateSession(*local->GetPreferredUniqueNetId(), NAME_GameSession, *sesSettings);
-	}
+	if (GEngine)
+		GEngine->AddOnScreenDebugMessage(-1,15,FColor::Blue,FString("Equip!"));
 }
 
-void AlearnUE5Character::JoinGameSession()
+void AlearnUE5Character::OnRep_OverlapWeapon(AWeapon* LastWeapon)
 {
-		if (SessionPtr.IsValid()){
-			SessionPtr->AddOnFindSessionsCompleteDelegate_Handle(FindSessionDelegate);
+	if (LastWeapon)
+		LastWeapon->ShowPickWidget(false);
 
-			SessionSearch = MakeShareable(new FOnlineSessionSearch());
-
-			SessionSearch->MaxSearchResults = 10000;
-			SessionSearch->bIsLanQuery = false;
-			SessionSearch->QuerySettings.Set(SEARCH_PRESENCE,true,EOnlineComparisonOp::Equals);
-
-			ULocalPlayer* player = GetWorld()->GetFirstLocalPlayerFromController();
-			SessionPtr->FindSessions(*player->GetPreferredUniqueNetId(),SessionSearch.ToSharedRef());
-	}
-}
-
-void AlearnUE5Character::OnSessionCreated(FName SessionName, bool isSuccessful)
-{
-	if (isSuccessful)
-	{
-		GEngine->AddOnScreenDebugMessage(-1,
-			30.0f,
-			FColor::Blue,
-			FString::Printf(TEXT("Created session: %s"), *SessionName.ToString()));
-	}
-	else {
-		GEngine->AddOnScreenDebugMessage(-1,
-			30.0f,
-			FColor::Red,
-			TEXT("Failed to create session!"));
-	}
-}
-
-void AlearnUE5Character::OnFindSession(bool bWasSuccessful)
-{
-	if(SessionSearch != nullptr)
-	for (auto result : SessionSearch->SearchResults)
-	{
-		FString Id = result.GetSessionIdStr();
-		FString owner = result.Session.OwningUserName;
-
-		GEngine->AddOnScreenDebugMessage(-1,30.0f,FColor::Blue,FString::Printf(TEXT("Found %s, Owner"),*Id,*owner));
-	}
+	if (OverlappingWeapon)
+		OverlappingWeapon->ShowPickWidget(true);
 }
